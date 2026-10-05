@@ -2,6 +2,7 @@
 import streamlit as st
 import pandas as pd
 import os
+import shutil
 import requests
 from datetime import datetime
 import ffmpeg
@@ -33,13 +34,16 @@ with tabs[0]:
         if st.button("Arrêter le match"):
             st.session_state.start_time = None
 
-    if st.session_state.start_time:
-        elapsed = datetime.now() - st.session_state.start_time
-        minutes = elapsed.seconds // 60
-        seconds = elapsed.seconds % 60
-        st.success(f"Temps : {minutes:02}:{seconds:02}")
-    else:
-        st.info("Le match n'a pas commencé")
+    @st.fragment(run_every=1)
+    def afficher_chrono():
+        if st.session_state.start_time:
+            elapsed = datetime.now() - st.session_state.start_time
+            total = int(elapsed.total_seconds())
+            st.success(f"Temps : {total // 60:02}:{total % 60:02}")
+        else:
+            st.info("Le match n'a pas commencé")
+
+    afficher_chrono()
 
     st.subheader("🔹 Statistiques du match")
     actions = ["Tir", "But", "Faute", "Corner", "Arrêt", "Passe"]
@@ -48,9 +52,8 @@ with tabs[0]:
     if st.button("Ajouter à la timeline"):
         if st.session_state.start_time:
             elapsed = datetime.now() - st.session_state.start_time
-            minutes = elapsed.seconds // 60
-            seconds = elapsed.seconds % 60
-            timestamp = f"{minutes:02}:{seconds:02}"
+            total = int(elapsed.total_seconds())
+            timestamp = f"{total // 60:02}:{total % 60:02}"
             st.session_state.timeline.append({"Timestamp": timestamp, "Action": selected_action})
             st.success(f"Ajouté : {selected_action} à {timestamp}")
         else:
@@ -74,7 +77,8 @@ with tabs[1]:
         if st.session_state.video_mode == "Uploader un fichier":
             uploaded_file = st.file_uploader("Choisissez un fichier vidéo", type=["mp4", "mov", "avi"])
             if uploaded_file is not None:
-                output_path = os.path.join("match.mp4")
+                os.makedirs("videos", exist_ok=True)
+                output_path = os.path.join("videos", f"match_{datetime.now():%Y%m%d_%H%M%S}.mp4")
                 with open(output_path, "wb") as f:
                     f.write(uploaded_file.read())
                 st.session_state.video_path = output_path
@@ -88,9 +92,11 @@ with tabs[1]:
                 with st.spinner("Téléchargement en cours..."):
                     try:
                         response = requests.get(video_url, stream=True, timeout=60)
+                        response.raise_for_status()
                         total_size = int(response.headers.get('content-length', 0))
                         chunk_size = 8192
-                        output_path = "match.mp4"
+                        os.makedirs("videos", exist_ok=True)
+                        output_path = os.path.join("videos", f"match_{datetime.now():%Y%m%d_%H%M%S}.mp4")
                         with open(output_path, "wb") as f:
                             for data in response.iter_content(chunk_size):
                                 f.write(data)
@@ -104,19 +110,20 @@ with tabs[1]:
     if st.session_state.video_uploaded and st.session_state.timeline:
         if st.button("Extraire les clips"):
             with st.spinner("Analyse en cours..."):
-                os.makedirs("clips", exist_ok=True)
+                shutil.rmtree("clips", ignore_errors=True)
+                os.makedirs("clips")
                 for i, entry in enumerate(st.session_state.timeline):
                     minutes, seconds = map(int, entry["Timestamp"].split(":"))
                     total_sec = minutes * 60 + seconds
                     start = max(total_sec - 5, 0)
                     duration = 10
-                    out_clip = f"clips/clip_{i+1}_{entry['Action']}.mp4"
+                    out_clip = f"clips/clip_{i+1}_{entry['Action']}_{minutes:02}-{seconds:02}.mp4"
 
                     (
                         ffmpeg
                         .input(st.session_state.video_path, ss=start, t=duration)
-                        .output(out_clip, c="copy")
-                        .run(overwrite_output=True)
+                        .output(out_clip, vcodec="libx264", acodec="aac")
+                        .run(overwrite_output=True, quiet=True)
                     )
                 st.success(f"{len(st.session_state.timeline)} clips créés dans le dossier 'clips'")
     else:
